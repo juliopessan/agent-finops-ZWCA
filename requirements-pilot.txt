@@ -1,6 +1,6 @@
 # Pilot runtime dependencies
 # Python 3.10+ is required by Headroom.
-headroom-ai[all]==0.32.1
+headroom-ai[all]==0.35.0
 openai>=2.46.0,<3.0.0
 anthropic>=0.117.0,<1.0.0
 PyYAML>=6.0.3,<7.0.0
