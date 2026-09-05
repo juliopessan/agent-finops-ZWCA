@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gera dashboard HTML self-contained a partir do store.
+"""Gera dashboard HTML self-contained a partir do store, no Ledger Design System.
 
 Uso: python3 dashboard/generate_dashboard.py [--days 30] [--out dashboard.html]
 """
@@ -7,12 +7,14 @@ import argparse
 import datetime
 import html
 import json
+import os
 import sys
 from pathlib import Path
 from string import Template
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "store"))
 import db  # noqa: E402
+from waste_ledger_metrics import load_waste_ledger_metrics  # noqa: E402
 
 
 def q(conn, sql, params):
@@ -36,6 +38,19 @@ def main():
     saved = sum(r[2] or 0 for r in savings)
     conn.close()
 
+    ledger_db = Path(os.environ.get("AGENT_FINOPS_DB", "~/.agent-finops/telemetry.db")).expanduser()
+    try:
+        ledger = load_waste_ledger_metrics(ledger_db)
+    except Exception:
+        ledger = {
+            "summary": {
+                "artifacts": 0, "tokens_candidate": 0, "tokens_transmitted": 0,
+                "tokens_rejected": 0, "actual_cost_usd": 0, "blocked_events": 0,
+                "admitted_events": 0, "blended_reduction_pct": 0.0, "active_reservations": 0,
+            },
+            "by_tier": [], "by_reason": [],
+        }
+
     def table(headers, rows, fmt=None):
         h = "".join(f"<th>{x}</th>" for x in headers)
         body = ""
@@ -46,114 +61,155 @@ def main():
         tbod = f"<tbody>{body or '<tr><td colspan=99>sem dados</td></tr>'}</tbody>"
         return f"<table>{thead}{tbod}</table>"
 
+    def dict_table(headers, rows, keys, fmt=None):
+        return table(headers, [[r.get(k) for k in keys] for r in rows], fmt)
+
     money = lambda i, v: f"US$ {v:.2f}" if isinstance(v, float) else (f"{v:,}" if isinstance(v, int) else v)
+    tokens_fmt = lambda i, v: f"{v:,}" if isinstance(v, int) else v
     days_labels = json.dumps([r[0] for r in by_day])
     days_values = json.dumps([round(r[1] or 0, 2) for r in by_day])
+
+    s = ledger["summary"]
+    candidate = int(s["tokens_candidate"])
+    transmitted = int(s["tokens_transmitted"])
+    rejected = int(s["tokens_rejected"])
+    reduction_pct = s["blended_reduction_pct"]
+    bar_pct = round((transmitted / candidate) * 100, 1) if candidate else 0.0
 
     page = Template("""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>agent-finops · FinOps Dashboard</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<title>ZWCA · Waste Ledger Dashboard</title>
 <style>
-  :root{--ink:#12100E;--paper:#FAF8F4;--graphite:#3A3733;--smoke:#8A857D;--line:#E4E0D8;--ember:#FF5800;--ember-deep:#C43E00;--card:#FFFFFF;--success:#00A650;--info:#0078D4;--mono:'JetBrains Mono',monospace;--display:'Space Grotesk',sans-serif;--body:'Inter',sans-serif}
-  *{margin:0;padding:0;box-sizing:border-box} html{scroll-behavior:smooth} body{background:var(--paper);color:var(--ink);font-family:var(--body);font-size:15.5px;line-height:1.65}
-  .hero{background:var(--ink);color:var(--paper);padding:72px 40px 54px;margin-bottom:56px;position:relative;overflow:hidden}
-  .hero::after{content:'';position:absolute;left:0;right:0;bottom:0;height:4px;background:linear-gradient(90deg,var(--ember),var(--ember-deep))}
-  .hero-inner{max-width:1040px;margin:0 auto}
-  .hero-eyebrow{font-family:var(--mono);font-weight:500;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ember);margin-bottom:16px;display:flex;align-items:center;gap:10px}
-  .hero-eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--ember)}
-  .hero h1{font-family:var(--display);font-weight:700;font-size:clamp(2.1rem,4.4vw,3.1rem);line-height:1.08;letter-spacing:-.02em;margin:0 0 14px}
-  .hero-sub{font-family:var(--body);font-weight:400;font-size:1.15rem;max-width:740px;margin:0 0 30px;color:#D8D2C6}
-  .hero-meta{display:flex;flex-wrap:wrap;gap:30px;font-family:var(--mono);font-size:.78rem;border-top:1px solid rgba(255,255,255,.15);padding-top:20px}
-  .hero-meta span{color:var(--ember);display:block;font-weight:500;font-size:.66rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
-  .hero-meta div{color:#D8D2C6}
-  .page{max-width:1040px;margin:0 auto;padding:0 40px 80px}
-  section{margin-bottom:60px}
-  .section-label{font-family:var(--mono);font-weight:500;font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ember-deep);margin-bottom:6px}
-  .section-bar{height:3px;width:56px;background:var(--ember);margin-bottom:16px}
-  h2{font-family:var(--display);font-weight:700;font-size:1.9rem;letter-spacing:-.01em;color:var(--ink);margin:0 0 8px}
-  .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0 28px}
-  .stat-tile{border:1px solid var(--line);background:var(--card);border-radius:4px;padding:18px 16px;text-align:left}
-  .stat-tile .stat-value{font-family:var(--display);font-size:1.9rem;font-weight:700;color:var(--ember-deep);line-height:1.1;margin-bottom:4px}
-  .stat-tile .stat-label{font-family:var(--mono);font-size:.66rem;color:var(--smoke);text-transform:uppercase;letter-spacing:.05em;font-weight:500}
-  table{width:100%;border-collapse:collapse;margin:12px 0 24px;font-size:.86rem;border:1px solid var(--line);border-radius:4px;overflow:hidden}
-  thead{background:var(--ink)}
-  th{color:var(--paper);text-align:left;padding:12px 16px;font-family:var(--mono);font-weight:600;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em}
-  tbody tr{border-bottom:1px solid var(--line)}
-  tbody tr:last-child{border-bottom:none}
-  td{padding:12px 16px;color:var(--graphite);font-size:.88rem}
-  tbody tr:nth-child(even) td{background:rgba(58,55,51,.02)}
-  .chart{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:20px;margin-top:12px;min-height:280px;display:flex;align-items:center;justify-content:center}
-  .chart canvas{width:100%;height:auto;min-height:240px;display:block}
-  footer{background:var(--ink);color:var(--paper);padding:48px 40px 32px;position:relative;margin-top:40px}
-  footer::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--ember),var(--ember-deep))}
-  .footer-inner{max-width:1040px;margin:0 auto;display:flex;justify-content:space-between;flex-wrap:wrap;gap:20px}
-  .footer-wordmark{font-family:var(--display);font-weight:700;font-size:1.8rem;letter-spacing:-.02em}
-  .footer-wordmark em{color:var(--ember);font-style:normal;margin:0 4px}
+  :root{
+    --bg:#F0EEE6; --ink:#15140F; --ink-soft:#5B584E; --line:#D8D4C6; --line-strong:#B8B39F;
+    --card-dark:#14140F; --orange:#FF5A36; --green:#7FD79A; --green-bg:#1C2A1E; --green-ink:#BFF0CE;
+    --mono:'IBM Plex Mono','JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.6}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 40px}
+  nav.top{display:flex;align-items:center;justify-content:space-between;padding:26px 40px;max-width:1180px;margin:0 auto}
+  .brand{display:flex;align-items:center;gap:12px;font-family:var(--mono);font-weight:700;letter-spacing:.06em;font-size:14px}
+  .brand .mark{width:30px;height:30px;background:var(--ink);color:var(--bg);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:700;font-size:14px}
+  .badge{font-family:var(--mono);font-size:11px;border:1px solid var(--line-strong);padding:7px 12px;letter-spacing:.04em}
+
+  .hero{padding:20px 0 40px}
+  .eyebrow{display:flex;align-items:center;gap:12px;font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--ink-soft);margin-bottom:16px}
+  .eyebrow .rule{width:26px;height:1px;background:var(--line-strong)}
+  h1{font-family:var(--sans);font-weight:800;font-size:40px;letter-spacing:-.02em;margin-bottom:10px}
+  .sub{font-size:15px;color:var(--ink-soft);max-width:70ch}
+
+  .ledger{background:var(--card-dark);color:#EDEBDF;padding:26px;margin:36px 0;border-radius:2px}
+  .ledger-head{display:flex;align-items:center;justify-content:space-between;font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:#A9A692;border-bottom:1px solid #2B2A21;padding-bottom:16px;margin-bottom:20px}
+  .ledger-head .dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;margin-right:8px}
+  .ledger-head .title{color:#EDEBDF;font-weight:700}
+  .row-label{font-family:var(--mono);font-size:13px;color:#A9A692;display:flex;justify-content:space-between;margin-bottom:8px}
+  .row-label .num{font-family:var(--mono);font-weight:700;font-size:22px}
+  .num.orange{color:var(--orange)} .num.green{color:var(--green)}
+  .bar-track{height:6px;background:#2B2A21;margin-bottom:22px;overflow:hidden}
+  .bar-fill{height:100%} .bar-fill.orange{background:var(--orange);width:100%}
+  .bar-fill.green{background:var(--green);width:$bar_pct%}
+  .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px 12px;padding:20px 0;border-top:1px solid #2B2A21;border-bottom:1px solid #2B2A21;margin-bottom:8px}
+  .stat-grid .num{font-family:var(--mono);font-weight:700;font-size:24px;display:block}
+  .stat-grid .lab{font-family:var(--mono);font-size:11px;color:#A9A692}
   @media (max-width:820px){.stat-grid{grid-template-columns:repeat(2,1fr)}}
+
+  section{padding:44px 0;border-top:1px solid var(--line)}
+  .sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:24px}
+  .sec-num{font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
+  h2{font-family:var(--sans);font-weight:800;font-size:26px;letter-spacing:-.01em}
+
+  .stat-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0 28px}
+  .stat-tile{border:1px solid var(--line-strong);padding:18px 16px}
+  .stat-tile .v{font-family:var(--mono);font-size:26px;font-weight:700}
+  .stat-tile .l{font-family:var(--mono);font-size:11px;color:var(--ink-soft);letter-spacing:.05em;margin-top:4px}
+  @media (max-width:820px){.stat-tiles{grid-template-columns:repeat(2,1fr)}}
+
+  table{width:100%;border-collapse:collapse;margin:12px 0 8px;font-size:13.5px;font-family:var(--mono)}
+  thead{border-bottom:1px solid var(--ink)}
+  th{text-align:left;padding:10px 14px;font-size:11px;letter-spacing:.06em;color:var(--ink-soft);font-weight:600}
+  tbody tr{border-bottom:1px solid var(--line)}
+  td{padding:10px 14px;color:var(--ink)}
+
+  .chart{border:1px solid var(--line-strong);padding:20px;margin-top:12px}
+  .chart canvas{width:100%;height:auto;display:block}
+
+  footer{padding:40px 0 60px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:12px;color:var(--ink-soft);flex-wrap:wrap;gap:12px}
 </style>
 </head>
 <body>
-<div class="hero">
-  <div class="hero-inner">
-    <div class="hero-eyebrow"><span class="dot"></span>agent-finops · telemetry local</div>
-    <h1>FinOps Dashboard</h1>
-    <p class="hero-sub">Painel com custo real de IA, volume de tokens e registry de agentes capturados no SQLite local.</p>
-    <div class="hero-meta">
-      <div><span>Período</span>Últimos $days dias</div>
-      <div><span>Fonte</span>SQLite local</div>
-      <div><span>Projeto</span>agent-finops</div>
-      <div><span>Status</span>Dados ingeridos</div>
+<nav class="top">
+  <div class="brand"><span class="mark">Z</span> ZWCA</div>
+  <div class="badge">WASTE LEDGER DASHBOARD</div>
+</nav>
+<div class="wrap">
+  <div class="hero">
+    <div class="eyebrow"><span class="rule"></span> GOVERNANCE &amp; OBSERVABILITY · PLANE 4</div>
+    <h1>Waste Ledger</h1>
+    <p class="sub">Custo, tokens e decisões do Guardian nos últimos $days dias — gerado localmente a partir do SQLite em <code>$db_path</code>.</p>
+  </div>
+
+  <div class="ledger">
+    <div class="ledger-head">
+      <span><span class="dot"></span><span class="title">ENFORCEMENT SUMMARY</span></span>
+      <span>$artifacts artefatos · $admitted_events admitidos · $blocked_events bloqueados</span>
+    </div>
+    <div class="row-label"><span>Candidato · o que os agentes pediram</span><span class="num orange">$tokens_candidate</span></div>
+    <div class="bar-track"><div class="bar-fill orange"></div></div>
+    <div class="row-label"><span>Transmitido · o que passou pelo Guardian</span><span class="num green">$tokens_transmitted</span></div>
+    <div class="bar-track"><div class="bar-fill green"></div></div>
+    <div class="stat-grid">
+      <div><span class="num">$reduction_pct%</span><span class="lab">redução blended</span></div>
+      <div><span class="num">$tokens_rejected</span><span class="lab">tokens rejeitados</span></div>
+      <div><span class="num">$active_reservations</span><span class="lab">reservas ativas</span></div>
+      <div><span class="num">US$ $actual_cost_usd</span><span class="lab">custo medido (audit)</span></div>
     </div>
   </div>
-</div>
-<div class="page">
+
   <section>
-    <div class="section-label">Visão executiva</div>
-    <div class="section-bar"></div>
-    <h2>Resumo</h2>
-    <div class="stat-grid">
-      <div class="stat-tile"><div class="stat-value">US$ $total</div><div class="stat-label">custo total</div></div>
-      <div class="stat-tile"><div class="stat-value">US$ $saved</div><div class="stat-label">economia registrada</div></div>
-      <div class="stat-tile"><div class="stat-value">$len_by_project</div><div class="stat-label">projetos ativos</div></div>
-      <div class="stat-tile"><div class="stat-value">$len_registry</div><div class="stat-label">agentes no registry</div></div>
+    <div class="sec-head"><span class="sec-num">01</span><h2>Resumo de custo</h2></div>
+    <div class="stat-tiles">
+      <div class="stat-tile"><div class="v">US$ $total</div><div class="l">CUSTO TOTAL</div></div>
+      <div class="stat-tile"><div class="v">US$ $saved</div><div class="l">ECONOMIA REGISTRADA</div></div>
+      <div class="stat-tile"><div class="v">$len_by_project</div><div class="l">PROJETOS ATIVOS</div></div>
+      <div class="stat-tile"><div class="v">$len_registry</div><div class="l">AGENTES NO REGISTRY</div></div>
     </div>
   </section>
 
   <section>
-    <div class="section-label">Consumo</div>
-    <div class="section-bar"></div>
-    <h2>Custo por dia</h2>
+    <div class="sec-head"><span class="sec-num">02</span><h2>Consumo</h2></div>
     <div class="chart"><canvas id="c"></canvas></div>
-    <h2 style="margin-top:24px">Por projeto</h2>
+    <h2 style="margin-top:28px;font-size:18px">Por projeto</h2>
     $table_project
-    <h2 style="margin-top:24px">Por modelo</h2>
+    <h2 style="margin-top:24px;font-size:18px">Por modelo</h2>
     $table_model
   </section>
 
   <section>
-    <div class="section-label">Economia</div>
-    <div class="section-bar"></div>
-    <h2>Economia por camada</h2>
+    <div class="sec-head"><span class="sec-num">03</span><h2>Guardian por tier</h2></div>
+    $table_tier
+    <h2 style="margin-top:24px;font-size:18px">Por reason code</h2>
+    $table_reason
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-num">04</span><h2>Economia por camada</h2></div>
     $table_savings
   </section>
 
   <section>
-    <div class="section-label">Governança</div>
-    <div class="section-bar"></div>
-    <h2>Agent Registry</h2>
+    <div class="sec-head"><span class="sec-num">05</span><h2>Agent registry</h2></div>
     $table_registry
   </section>
 </div>
 <footer>
-  <div class="footer-inner">
-    <div class="footer-wordmark">agent<em>.</em>finops</div>
-    <div style="font-family:var(--mono);font-size:.76rem;color:#8A857D">Gerado localmente em $today</div>
-  </div>
+  <span>agent-finops · ZWCA runtime</span>
+  <span>Gerado localmente em $today</span>
+  <span>Deterministic before probabilistic.</span>
 </footer>
 <script>
 const L=$days_labels,V=$days_values;
@@ -164,10 +220,10 @@ if(canvas&&L.length>0&&V.length>0){
   canvas.height=220;
   const c=canvas.getContext('2d');
   const W=canvas.width,H=canvas.height,m=Math.max(...V,1);
-  c.strokeStyle='#FF5800';c.lineWidth=2.5;c.beginPath();
+  c.strokeStyle='#FF5A36';c.lineWidth=2.5;c.beginPath();
   V.forEach((v,i)=>{const x=40+i*(W-80)/Math.max(V.length-1,1),y=H-40-(v/m)*(H-80);i?c.lineTo(x,y):c.moveTo(x,y);});
   c.stroke();
-  c.fillStyle='#FF5800';c.font='11px sans-serif';c.textAlign='center';c.fillStyle='#8A857D';
+  c.font='11px monospace';c.textAlign='center';c.fillStyle='#5B584E';
   L.forEach((l,i)=>{if(i%Math.ceil(L.length/8)===0)c.fillText(l.slice(5),40+i*(W-80)/Math.max(L.length-1,1),H-10);});
 }
 </script>
@@ -175,6 +231,7 @@ if(canvas&&L.length>0&&V.length>0){
 </html>""")
     page = page.safe_substitute(
         days=args.days,
+        db_path=str(ledger_db),
         total=f"{total:.2f}",
         saved=f"{saved:.2f}",
         len_by_project=len(by_project),
@@ -183,6 +240,23 @@ if(canvas&&L.length>0&&V.length>0){
         table_model=table(["modelo", "custo"], by_model, money),
         table_savings=table(["camada", "tokens poupados", "USD"], savings, money),
         table_registry=table(["agente", "projeto", "modelo", "status", "owner"], registry),
+        table_tier=dict_table(
+            ["tier", "eventos", "tokens transmitidos", "custo medido"],
+            ledger["by_tier"], ["tier", "events", "tokens_transmitted", "actual_cost_usd"], money,
+        ),
+        table_reason=dict_table(
+            ["reason code", "eventos"], ledger["by_reason"], ["reason_code", "events"],
+        ),
+        artifacts=s["artifacts"],
+        admitted_events=s["admitted_events"],
+        blocked_events=s["blocked_events"],
+        tokens_candidate=f"{candidate:,}",
+        tokens_transmitted=f"{transmitted:,}",
+        tokens_rejected=f"{rejected:,}",
+        reduction_pct=reduction_pct,
+        active_reservations=s["active_reservations"],
+        actual_cost_usd=f"{float(s['actual_cost_usd']):.2f}",
+        bar_pct=bar_pct,
         days_labels=days_labels,
         days_values=days_values,
         today=datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
